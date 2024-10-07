@@ -1,7 +1,7 @@
 package com.sphenon.basics.encoding;
 
 /****************************************************************************
-  Copyright 2001-2018 Sphenon GmbH
+  Copyright 2001-2024 Sphenon GmbH
 
   Licensed under the Apache License, Version 2.0 (the "License"); you may not
   use this file except in compliance with the License. You may obtain a copy
@@ -21,12 +21,14 @@ import com.sphenon.basics.message.*;
 import com.sphenon.basics.exception.*;
 import com.sphenon.basics.notification.*;
 import com.sphenon.basics.customary.*;
+import com.sphenon.basics.system.*;
 import com.sphenon.basics.services.*;
 
 import java.util.regex.*;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.Vector;
+import java.util.Base64;
 import java.text.*;
 
 import java.net.URLDecoder;
@@ -51,9 +53,11 @@ public enum Encoding {
     URIFORM,    // Universal Resource Identifier codierung für Formulare
     UTF8,       // UTF-8
     SHA1,       // hexadecimal encoding of SHA1 digest
+    SA,         // Somewhat Safe ASCII - discarding all but alphanumeric and underscore
     VSA,        // Very Safe ASCII - escaping with _xx for all but alphanumeric
     VSAU,       // Rather Safe ASCII - escaping with _xx for all but alphanumeric and underscore
     FILENAME,   // rather safe ASCII, usable as filename
+    SUBDOMAIN,  // rather safe ASCII, usable as a subdomain part (inbetween dots)
     JAVA,       // content of a string literal in Java, i.e. "...."
     JAVASCRIPT, // LEGACY: please use JSSINGLE/DOUBLE for clarity instead
     JSDOUBLE,   // content of a double quoted string literal in JavaScript, i.e. "...."
@@ -93,10 +97,14 @@ public enum Encoding {
     FLOAT,      // a text containing of a float
     FORMAT,     // a formatted text, created with printf-like methods
     REGEXP,     // a text substituted with a regular expression pattern and replacement
+    REXT,       // regexp extraction, a text substituted with the first matching subgroup of a regular expression
+    REGRP,      // regexp subgroup extraction, a text substituted with the given matching subgroup of a regular expression
+                // in contrast to REGEXP and REXT, this may return 'null' if subgroup did not match
     REESC,      // a text escaped for use in regexps as a static string match
+    MAP,        // a text optionally replaced by a given mapping
     JSON,       // JavaScript Object Notation
     TEX,        // (La)TeX text
-    BASE64,     // well, sigh
+    BASE64,     // Basic Base64 encoding; see e.g. https://docs.oracle.com/javase/8/docs/api/java/util/Base64.html
     DSP,        // dot.separated.path
     SSP,        // slash/separated/path
     FIXED      // string with fixed length
@@ -111,9 +119,11 @@ public enum Encoding {
         if (encoding.equalsIgnoreCase("URIFORM"     )) { return URIFORM     ; }
         if (encoding.equalsIgnoreCase("UTF8"        )) { return UTF8        ; }
         if (encoding.equalsIgnoreCase("SHA1"        )) { return SHA1        ; }
+        if (encoding.equalsIgnoreCase("SA"          )) { return SA          ; }
         if (encoding.equalsIgnoreCase("VSA"         )) { return VSA         ; }
         if (encoding.equalsIgnoreCase("VSAU"        )) { return VSAU        ; }
         if (encoding.equalsIgnoreCase("FILENAME"    )) { return FILENAME    ; }
+        if (encoding.equalsIgnoreCase("SUBDOMAIN"   )) { return SUBDOMAIN   ; }
         if (encoding.equalsIgnoreCase("JAVA"        )) { return JAVA        ; }
         if (encoding.equalsIgnoreCase("JAVASCRIPT"  )) { return JAVASCRIPT  ; }
         if (encoding.equalsIgnoreCase("JSSINGLE"    )) { return JSSINGLE    ; }
@@ -150,9 +160,12 @@ public enum Encoding {
         if (encoding.equalsIgnoreCase("FLOAT"       )) { return FLOAT       ; }
         if (encoding.equalsIgnoreCase("FORMAT"      )) { return FORMAT      ; }
         if (encoding.equalsIgnoreCase("REGEXP"      )) { return REGEXP      ; }
+        if (encoding.equalsIgnoreCase("REXT"        )) { return REXT        ; }
+        if (encoding.equalsIgnoreCase("REGRP"       )) { return REGRP       ; }
         if (encoding.equalsIgnoreCase("REESC"       )) { return REESC       ; }
+        if (encoding.equalsIgnoreCase("MAP"         )) { return MAP         ; }
         if (encoding.equalsIgnoreCase("JSON"        )) { return JSON        ; }
-        if (encoding.equalsIgnoreCase("TEX"         )) { return TEX        ; }
+        if (encoding.equalsIgnoreCase("TEX"         )) { return TEX         ; }
         if (encoding.equalsIgnoreCase("BASE64"      )) { return BASE64      ; }
         if (encoding.equalsIgnoreCase("DSP"         )) { return DSP         ; }
         if (encoding.equalsIgnoreCase("SSP"         )) { return SSP         ; }
@@ -178,6 +191,10 @@ public enum Encoding {
         Object[] options = new Object[strings.length];
         int i=0;
         for (String string : strings) {
+            if (string.length() >= 2 && string.charAt(0) == '"' && string.charAt(string.length()-1) == '"') {
+                java.lang.System.err.println("REDUCING ENCODING OPTION: " + string);
+                string = string.substring(1, string.length()-1);
+            }
             options[i++] = recode(context, string, Encoding.URI, Encoding.UTF8);
         }
         return options;
@@ -185,6 +202,12 @@ public enum Encoding {
 
     static public interface LinkRecoder {
         public String recode(CallContext context, String link, HashMap<String,String> attributes);
+    }
+
+    // [Concept:Actions HTMLAction.template,emos.doclet,DocletToHTML.template,Encoding.java,DocletLinkRecoder.java,emacsworkspace.el,getslash.landscape,/etc/landscape/landscape.json,fetch_landscape.bash,VUIAdapterReflectedJavaInstance.java,EmacsTree.java,shortcuts.xuxf,shortcuts.ews]
+    static public interface AbbreviationRecoder {
+        public String recodeAbbreviation(CallContext context, String abbreviation, Map<String,String> recoding_options);
+        public Pattern getAbbreviationPattern(CallContext context);
     }
 
     static protected Pattern uri_escape;
@@ -466,7 +489,9 @@ public enum Encoding {
         else if (source == UTF8     && target == VSA       ) { string = recode_UTF8_VSA(context, string, recoding_target_context); }
         else if (source == VSAU     && target == UTF8      ) { string = recode_VSAU_UTF8(context, string, recoding_target_context); }
         else if (source == UTF8     && target == VSAU      ) { string = recode_UTF8_VSAU(context, string, recoding_target_context); }
+        else if (source == UTF8     && target == SA        ) { string = recode_UTF8_SA(context, string, recoding_target_context); }
         else if (source == UTF8     && target == FILENAME  ) { string = recode_UTF8_FILENAME(context, string, recoding_target_context); }
+        else if (source == UTF8     && target == SUBDOMAIN  ) { string = recode_UTF8_SUBDOMAIN(context, string, recoding_target_context); }
         else if (source == UTF8     && target == SHA1      ) { string = recode_UTF8_SHA1(context, string, recoding_target_context); }
         else if (source == UTF8     && target == JAVA      ) { string = recode_UTF8_JAVA(context, string, recoding_target_context); }
         else if (source == UTF8     && target == JAVASCRIPT) { string = recode_UTF8_JAVASCRIPT(context, string, recoding_target_context); }
@@ -484,6 +509,7 @@ public enum Encoding {
         else if (source == UTF8     && target == XMLATT    ) { string = recode_UTF8_XMLATT(context, string, recoding_target_context); }
         else if (source == UTF8     && target == SQL       ) { string = recode_UTF8_SQL(context, string, recoding_target_context); }
         else if (source == UCU      && target == SQLID     ) { string = recode_UCU_SQLID(context, string, recoding_target_context); }
+        else if (source == UCU      && target == LCU       ) { string = recode_UCU_LCU(context, string, recoding_target_context); }
         else if (source == XMLITEXT && target == UTF8      ) { string = recode_XMLITEXT_UTF8(context, string, recoding_target_context); }
         else if (source == XML      && target == UTF8      ) { string = recode_XML_UTF8(context, string, recoding_target_context); }
         else if (source == MC       && target == LCU       ) { string = recode_MC_LCU(context, string, recoding_target_context); }
@@ -494,6 +520,7 @@ public enum Encoding {
         else if (source == MC       && target == STUC      ) { string = recode_MC_STUC(context, string, recoding_target_context); }
         else if (source == MC       && target == CB        ) { string = recode_MC_CB(context, string, recoding_target_context); }
         else if (source == LCU      && target == MC        ) { string = recode_LCU_MC(context, string, recoding_target_context); }
+        else if (source == LCU      && target == UCU       ) { string = recode_LCU_UCU(context, string, recoding_target_context); }
         else if (source == MCB      && target == MC        ) { string = recode_MCB_MC(context, string, recoding_target_context); }
         else if (source == LC       && target == UC        ) { string = recode_LC_UC(context, string, recoding_target_context); }
         else if (source == LCU      && target == LCD       ) { string = recode_LCU_LCD(context, string, recoding_target_context); }
@@ -512,11 +539,16 @@ public enum Encoding {
         else if (source == FLOAT    && target == FORMAT    ) { string = recode_FLOAT_FORMAT(context, string, recoding_target_context, getOption(context, 0, "", options)); }
         else if (source == UTF8     && target == FORMAT    ) { string = recode_UTF8_FORMAT(context, string, recoding_target_context, getOption(context, 0, "", options)); }
         else if (source == UTF8     && target == REGEXP    ) { string = recode_UTF8_REGEXP(context, string, recoding_target_context, getOption(context, 0, "", options), getOption(context, 1, "", options)); }
-        else if (source == UTF8     && target == FIXED     ) { string = recode_UTF8_FIXED(context, string, recoding_target_context, getOption(context, 0, (Integer) 32, options), getOption(context, 1, " ", options), getOption(context, 2, "L", options)); }
+        else if (source == UTF8     && target == REXT      ) { string = recode_UTF8_REGEXP(context, string, recoding_target_context, getOption(context, 0, "", options), "$1"); }
+        else if (source == UTF8     && target == REGRP      ) { string = recode_UTF8_REGRP(context, string, recoding_target_context, getOption(context, 0, "", options), getOption(context, 1, (Integer) 1, options)); }
+        else if (source == UTF8     && target == FIXED     ) { string = recode_UTF8_FIXED(context, string, recoding_target_context, getOption(context, 0, (Integer) 32, options), getOption(context, 1, " ", options), getOption(context, 2, "L", options), getOption(context, 3, (Integer) 0, options), getOption(context, 4, "", options)); }
         else if (source == UTF8     && target == REESC     ) { string = recode_UTF8_REESC(context, string, recoding_target_context); }
+        else if (source == UTF8     && target == MAP       ) { string = recode_UTF8_MAP(context, string, recoding_target_context, getOption(context, 0, (Map<String,String>) null, options), getOption(context, 1, (String) null, options)); }
         else if (source == UTF8     && target == JSON      ) { string = recode_UTF8_JSON(context, string, recoding_target_context); }
         else if (source == UTF8     && target == TEX       ) { string = recode_UTF8_TEX(context, string, recoding_target_context); }
         else if (source == BASE64   && target == UTF8      ) { string = recode_BASE64_UTF8(context, string, recoding_target_context); }
+        else if (source == UTF8     && target == BASE64    ) { string = recode_UTF8_BASE64(context, string, recoding_target_context); }
+
         else if (source == DSP      && target == SSP       ) { string = recode_UTF8_REGEXP(context, string, recoding_target_context, "\\.", "/"); }
         else if (source == SSP      && target == DSP       ) { string = recode_UTF8_REGEXP(context, string, recoding_target_context, "/", "."); }
 
@@ -542,7 +574,9 @@ public enum Encoding {
 //        else if (source == UTF8     && target == VSA       ) { output = recode_UTF8_VSA(context, string, output, recoding_target_context); }
 //        else if (source == VSAU     && target == UTF8      ) { output = recode_VSAU_UTF8(context, string, output, recoding_target_context); }
 //        else if (source == UTF8     && target == VSAU      ) { output = recode_UTF8_VSAU(context, string, output, recoding_target_context); }
+//        else if (source == UTF8     && target == SA        ) { output = recode_UTF8_SA(context, string, output, recoding_target_context); }
 //        else if (source == UTF8     && target == FILENAME  ) { output = recode_UTF8_FILENAME(context, string, output, recoding_target_context); }
+//        else if (source == UTF8     && target == SUBDOMAIN  ) { output = recode_UTF8_SUBDOMAIN(context, string, output, recoding_target_context); }
 //        else if (source == UTF8     && target == SHA1      ) { output = recode_UTF8_SHA1(context, string, output, recoding_target_context); }
         else if (source == UTF8     && target == JAVA      ) { output = recode_UTF8_JAVA(context, string, output, recoding_target_context); }
 //        else if (source == UTF8     && target == JAVASCRIPT) { output = recode_UTF8_JAVASCRIPT(context, string, output, recoding_target_context); }
@@ -560,6 +594,7 @@ public enum Encoding {
         else if (source == UTF8     && target == XMLATT    ) { output = recode_UTF8_XMLATT(context, string, output, recoding_target_context); }
 //        else if (source == UTF8     && target == SQL       ) { output = recode_UTF8_SQL(context, string, output, recoding_target_context); }
 //        else if (source == UCU      && target == SQLID     ) { output = recode_UCU_SQLID(context, string, output, recoding_target_context); }
+//        else if (source == UCU      && target == LCU       ) { output = recode_UCU_LCU(context, string, output, recoding_target_context); }
 //        else if (source == XMLITEXT && target == UTF8      ) { output = recode_XMLITEXT_UTF8(context, string, output, recoding_target_context); }
 //        else if (source == XML      && target == UTF8      ) { output = recode_XML_UTF8(context, string, output, recoding_target_context); }
 //        else if (source == MC       && target == LCU       ) { output = recode_MC_LCU(context, string, output, recoding_target_context); }
@@ -570,6 +605,7 @@ public enum Encoding {
 //        else if (source == MC       && target == CB        ) { output = recode_MC_CB(context, string, output, recoding_target_context); }
 //        else if (source == MC       && target == STUC      ) { output = recode_MC_STUC(context, string, output, recoding_target_context); }
 //        else if (source == LCU      && target == MC        ) { output = recode_LCU_MC(context, string, output, recoding_target_context); }
+//        else if (source == LCU      && target == UCU       ) { output = recode_LCU_UCU(context, string, output, recoding_target_context); }
 //        else if (source == MCB      && target == MC        ) { output = recode_MCB_MC(context, string, output, recoding_target_context); }
 //        else if (source == LC       && target == UC        ) { output = recode_LC_UC(context, string, output, recoding_target_context); }
 //        else if (source == LCU      && target == LCD       ) { output = recode_LCU_LCD(context, string, output, recoding_target_context); }
@@ -588,10 +624,15 @@ public enum Encoding {
 //        else if (source == FLOAT    && target == FORMAT    ) { output = recode_FLOAT_FORMAT(context, string, output, recoding_target_context, getOption(context, 0, "", options)); }
 //        else if (source == UTF8     && target == FORMAT    ) { output = recode_UTF8_FORMAT(context, string, output, recoding_target_context, getOption(context, 0, "", options)); }
 //        else if (source == UTF8     && target == REGEXP    ) { output = recode_UTF8_REGEXP(context, string, output, recoding_target_context, getOption(context, 0, "", options), getOption(context, 1, "", options)); }
-//        else if (source == UTF8     && target == FIXED     ) { output = recode_UTF8_FIXED(context, string, output, recoding_target_context, getOption(context, 0, (Integer) 32, options), getOption(context, 1, " ", options), getOption(context, 2, "L", options)); }
+//        else if (source == UTF8     && target == REXT      ) { output = recode_UTF8_REGEXP(context, string, output, recoding_target_context, getOption(context, 0, "", options), "$1"); }
+//        else if (source == UTF8     && target == REGRP     ) { output = recode_UTF8_REGEXP(context, string, output, recoding_target_context, getOption(context, 0, "", options), getOption(context, 1, (Integer) 1, options)); }
+//        else if (source == UTF8     && target == FIXED     ) { output = recode_UTF8_FIXED(context, string, output, recoding_target_context, getOption(context, 0, (Integer) 32, options), getOption(context, 1, " ", options), getOption(context, 2, "L", options), getOption(context, 3, (Integer) 0, options), getOption(context, 4, "", options)); }
+//        else if (source == UTF8     && target == REESC     ) { output = recode_UTF8_REESC(context, string, output, recoding_target_context); }
+//        else if (source == UTF8     && target == MAP       ) { output = recode_UTF8_MAP(context, string, output, recoding_target_context, getOption(context, 0, (Map<String,String>) null, options), getOption(context, 1, (String) null, options)); }
         else if (source == UTF8     && target == JSON      ) { output = recode_UTF8_JSON(context, string, output, recoding_target_context); }
         else if (source == UTF8     && target == TEX       ) { output = recode_UTF8_TEX(context, string, output, recoding_target_context); }
         else if (source == BASE64   && target == UTF8      ) { output = recode_BASE64_UTF8(context, string, output, recoding_target_context); }
+        else if (source == UTF8     && target == BASE64    ) { output = recode_UTF8_BASE64(context, string, output, recoding_target_context); }
 //        else if (source == DSP      && target == SSP       ) { string = recode_UTF8_REGEXP(context, string, recoding_target_context, "\\.", "/"); }
 //        else if (source == SSP      && target == DSP       ) { output = recode_UTF8_REGEXP(context, string, output, recoding_target_context, "/", "."); }
         else {
@@ -630,7 +671,9 @@ public enum Encoding {
         // else if (source == UTF8     && target == VSA       ) { return recode_UTF8_VSA(context, string, appendable, recoding_target_context); }
         // else if (source == VSAU     && target == UTF8      ) { return recode_VSAU_UTF8(context, string, appendable, recoding_target_context); }
         // else if (source == UTF8     && target == VSAU      ) { return recode_UTF8_VSAU(context, string, appendable, recoding_target_context); }
+        // else if (source == UTF8     && target == SA        ) { return recode_UTF8_SA(context, string, appendable, recoding_target_context); }
         // else if (source == UTF8     && target == FILENAME  ) { return recode_UTF8_FILENAME(context, string, appendable, recoding_target_context); }
+        // else if (source == UTF8     && target == SUBDOMAIN ) { return recode_UTF8_SUBDOMAIN(context, string, appendable, recoding_target_context); }
         // else if (source == UTF8     && target == SHA1      ) { return recode_UTF8_SHA1(context, string, appendable, recoding_target_context); }
         else if (source == UTF8     && target == JAVA      ) { return recode_UTF8_JAVA(context, string, appendable, recoding_target_context); }
         // else if (source == UTF8     && target == JAVASCRIPT) { return recode_UTF8_JAVASCRIPT(context, string, appendable, recoding_target_context); }
@@ -648,6 +691,7 @@ public enum Encoding {
         else if (source == UTF8     && target == XMLATT    ) { return recode_UTF8_XMLATT(context, string, appendable, recoding_target_context); }
         // else if (source == UTF8     && target == SQL       ) { return recode_UTF8_SQL(context, string, appendable, recoding_target_context); }
         // else if (source == UCU      && target == SQLID     ) { return recode_UCU_SQLID(context, string, appendable, recoding_target_context); }
+        // else if (source == UCU      && target == LCU       ) { return recode_UCU_LCU(context, string, appendable, recoding_target_context); }
         // else if (source == XMLITEXT && target == UTF8      ) { return recode_XMLITEXT_UTF8(context, string, appendable, recoding_target_context); }
         // else if (source == XML      && target == UTF8      ) { return recode_XML_UTF8(context, string, appendable, recoding_target_context); }
         // else if (source == MC       && target == LCU       ) { return recode_MC_LCU(context, string, appendable, recoding_target_context); }
@@ -658,6 +702,7 @@ public enum Encoding {
         // else if (source == MC       && target == CB        ) { return recode_MC_CB(context, string, appendable, recoding_target_context); }
         // else if (source == MC       && target == STUC      ) { return recode_MC_STUC(context, string, appendable, recoding_target_context); }
         // else if (source == LCU      && target == MC        ) { return recode_LCU_MC(context, string, appendable, recoding_target_context); }
+        // else if (source == LCU      && target == UCU       ) { return recode_LCU_UCU(context, string, appendable, recoding_target_context); }
         // else if (source == MCB      && target == MC        ) { return recode_MCB_MC(context, string, appendable, recoding_target_context); }
         // else if (source == LC       && target == UC        ) { return recode_LC_UC(context, string, appendable, recoding_target_context); }
         // else if (source == LCU      && target == LCD       ) { return recode_LCU_LCD(context, string, appendable, recoding_target_context); }
@@ -676,10 +721,15 @@ public enum Encoding {
         // else if (source == FLOAT    && target == FORMAT    ) { return recode_FLOAT_FORMAT(context, string, appendable, recoding_target_context, getOption(context, 0, "", options)); }
         // else if (source == UTF8     && target == FORMAT    ) { return recode_UTF8_FORMAT(context, string, appendable, recoding_target_context, getOption(context, 0, "", options)); }
         // else if (source == UTF8     && target == REGEXP    ) { return recode_UTF8_REGEXP(context, string, appendable, recoding_target_context, getOption(context, 0, "", options), getOption(context, 1, "", options)); }
-        // else if (source == UTF8     && target == FIXED     ) { return recode_UTF8_FIXED(context, string, appendable, recoding_target_context, getOption(context, 0, (Integer) 32, options), getOption(context, 1, " ", options), getOption(context, 2, "L", options)); }
+        // else if (source == UTF8     && target == REXT      ) { return recode_UTF8_REGEXP(context, string, appendable, recoding_target_context, getOption(context, 0, "", options), "$1"); }
+        // else if (source == UTF8     && target == REGRP     ) { return recode_UTF8_REGEXP(context, string, appendable, recoding_target_context, getOption(context, 0, "", options), getOption(context, 1, (Integer) 1, options)); }
+        // else if (source == UTF8     && target == FIXED     ) { return recode_UTF8_FIXED(context, string, appendable, recoding_target_context, getOption(context, 0, (Integer) 32, options), getOption(context, 1, " ", options), getOption(context, 2, "L", options), getOption(context, 3, (Integer) 0, options), getOption(context, 4, "", options)); }
+        // else if (source == UTF8     && target == REESC     ) { return recode_UTF8_REESC(context, string, appendable, recoding_target_context); }
+        // else if (source == UTF8     && target == MAP       ) { return recode_UTF8_MAP(context, string, appendable, recoding_target_context, getOption(context, 0, (Map<String,String>) null, options), getOption(context, 1, (String) null, options)); }
         else if (source == UTF8     && target == JSON      ) { return recode_UTF8_JSON(context, string, appendable, recoding_target_context); }
         else if (source == UTF8     && target == TEX       ) { return recode_UTF8_TEX(context, string, appendable, recoding_target_context); }
         // else if (source == BASE64   && target == UTF8      ) { return recode_BASE64_UTF8(context, string, appendable, recoding_target_context); }
+        // else if (source == UTF8     && target == BASE64    ) { return recode_UTF8_BASE64(context, string, appendable, recoding_target_context); }
         // else if (source == DSP      && target == SSP       ) { string = recode_UTF8_REGEXP(context, string, recoding_target_context, "\\.", "/"); }
         // else if (source == SSP      && target == DSP       ) { return recode_UTF8_REGEXP(context, string, appendable, recoding_target_context, "/", "."); }
         else {
@@ -1013,14 +1063,32 @@ public enum Encoding {
         int len = string.length();
         output = prepareOutput(context, output, len);
 
-        // might hopefully be replaced with java.util.Base64 in java 8
-        sun.misc.BASE64Decoder decoder = new sun.misc.BASE64Decoder();
-        try {
-            output.append(new String(decoder.decodeBuffer(string.toString())));
-        } catch (java.io.IOException ioe) {
-            System.err.println("error, base64: " + ioe);
-            ioe.printStackTrace();
-        }
+        Base64.Decoder decoder = java.util.Base64.getDecoder();
+        output.append(new String(decoder.decode(string.toString())));
+
+        return output;
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+
+    static public String recode_UTF8_BASE64(CallContext context, String string) {
+        return recode_UTF8_BASE64(context, string, (RecodingTargetContext) null);
+    }
+
+    static public StringBuilder recode_UTF8_BASE64(CallContext context, CharSequence string, StringBuilder output) {
+        return recode_UTF8_BASE64(context, string, output, (RecodingTargetContext) null);
+    }
+
+    static public String recode_UTF8_BASE64(CallContext context, String string, RecodingTargetContext recoding_target_context) {
+        return recode_UTF8_BASE64(context, string, null, recoding_target_context).toString();
+    }
+
+    static public StringBuilder recode_UTF8_BASE64(CallContext context, CharSequence string, StringBuilder output, RecodingTargetContext recoding_target_context) {
+        int len = string.length();
+        output = prepareOutput(context, output, len);
+
+        Base64.Encoder encoder = java.util.Base64.getEncoder();
+        output.append(encoder.encodeToString(string.toString().getBytes()));
 
         return output;
     }
@@ -1187,7 +1255,7 @@ public enum Encoding {
     }
 
     static public String recode_UTF8_JAVAID(CallContext context, String string, RecodingTargetContext recoding_target_context) {
-        if (string.matches("^(?:(?:interface)|(?:class)|(?:package)|(?:private)|(?:default)|(?:protected)|(?:public)|(?:final)|(?:static)|(?:return)|(?:j_.*))$")) {
+        if (string.matches("^(?:(?:import)|(?:interface)|(?:class)|(?:package)|(?:private)|(?:default)|(?:protected)|(?:public)|(?:final)|(?:static)|(?:return)|(?:j_.*))$")) {
             return "j_" + string;
         } else {
             return string;
@@ -1211,7 +1279,7 @@ public enum Encoding {
     }
 
     static public String recode_LC_JAVAID(CallContext context, String string, RecodingTargetContext recoding_target_context) {
-        if (string.matches("^(?:(?:interface)|(?:class)|(?:package)|(?:private)|(?:default)|(?:protected)|(?:public)|(?:j.*))$")) {
+        if (string.matches("^(?:(?:import)|(?:interface)|(?:class)|(?:package)|(?:private)|(?:default)|(?:protected)|(?:public)|(?:final)|(?:static)|(?:return)|(?:j.*))$")) {
             return "j" + string;
         } else {
             return string;
@@ -1225,7 +1293,7 @@ public enum Encoding {
     }
 
     static public String recode_MC_JAVAID(CallContext context, String string, RecodingTargetContext recoding_target_context) {
-        if (string.matches("^(?:(?:Interface)|(?:Class)|(?:Package)|(?:Private)|(?:Default)|(?:Protected)|(?:Public)|(?:J.*))$")) {
+        if (string.matches("^(?:(?:Import)|(?:Interface)|(?:Class)|(?:Package)|(?:Private)|(?:Default)|(?:Protected)|(?:Public)|(?:Final)|(?:Static)|(?:Return)|(?:J.*))$")) {
             return "J" + string;
         } else {
             return string;
@@ -1234,13 +1302,36 @@ public enum Encoding {
 
     // ---------------------------------------------------------------------------------------------------
 
+    static protected String[] SQL_KEYWORDS = {
+        "select",
+        "update",
+        "alter",
+        "drop",
+        "procedure",
+        "class",
+        "table",
+        "user",
+        "from",
+        "to",
+        "constraint",
+        "begin",
+        "end",
+        "set",
+        "unique"
+    };
+
+    static protected String UTF8_JAVASQLID_PATTERN;
+    
     static public String recode_UTF8_JAVASQLID(CallContext context, String string) {
         return recode_UTF8_JAVASQLID(context, string, (RecodingTargetContext) null);
     }
 
     static public String recode_UTF8_JAVASQLID(CallContext context, String string, RecodingTargetContext recoding_target_context) {
         string = recode_UTF8_JAVAID(context, string, recoding_target_context);
-        if (string.matches("^(?:(?i:select)|(?i:update)|(?i:alter)|(?i:procedure)|(?i:class)|(?i:user)|(?i:from)|(?i:s_.*))$")) {
+        if (UTF8_JAVASQLID_PATTERN == null) {
+            UTF8_JAVASQLID_PATTERN = StringUtilities.join(context, SQL_KEYWORDS, "^(?:", "|", "|(?i:s_.*))$", "(?i:", ")", false, true, null, null);
+        }
+        if (string.matches(UTF8_JAVASQLID_PATTERN)) {
             // well, "class" is not exactly a sql problem, but a java one; if
             // the attribute is called "class" in the db, the corresponding
             // getter will be named "getClass()" by the mapper and this
@@ -1250,6 +1341,37 @@ public enum Encoding {
             return string;
         }
     }
+
+    // ---------------------------------------------------------------------------------------------------
+    // interesting:
+
+    /*
+      incomplete, tokenising regexp for SQL
+      (matches quoted strings and identifiers)
+
+      for reference see:
+      - https://www.postgresql.org/docs/9.2/static/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
+      - https://www.postgresql.org/docs/9.2/static/sql-syntax-lexical.html#SQL-SYNTAX-CONSTANTS
+      - https://perldoc.perl.org/perlre.html
+      - https://perldoc.perl.org/perlunicode.html#Unicode-Character-Properties
+
+      hints:
+        ++     once matched, not giving back (greedier than greedy)
+        *?     non-greedy match
+        (?#)   comment
+        \p{}   unicode charachter property (L: character, incl. accents, N: numeric)
+    */
+    /*
+    static protected RegularExpression sql_quoted = new RegularExpression(
+            "(?:(?#string)'(?:[^']++|'')*+')"
+            "|(?:(?#c style escapes)E'(?:[^'\\\\]++|''|\\\\.)*+')"
+            "|(?:(?#unicode escapes)U&'[^']*')"
+            "|(?:(?#dollar quoted)\\$(?<tag>[\\p{L}_][\\p{L}\\p{N}_]*)\\$.*?\\$\\g{tag}\\$)"
+            "|(?:(?#bit string)B'[01]*')"
+            "|(?:(?#hex string)[xX]'[0-9A-Fa-f]*')"
+            "|(?:(?#identifier)[\\p{L}_][\\p{L}\\p{N}$_]*)" // @# here?
+            );
+    */
 
     // ---------------------------------------------------------------------------------------------------
 
@@ -1263,16 +1385,48 @@ public enum Encoding {
 
     // ---------------------------------------------------------------------------------------------------
 
+    static protected String UCU_SQLID_PATTERN;
+
     static public String recode_UCU_SQLID(CallContext context, String string) {
         return recode_UCU_SQLID(context, string, (RecodingTargetContext) null);
     }
 
     static public String recode_UCU_SQLID(CallContext context, String string, RecodingTargetContext recoding_target_context) {
-        if (string.matches("^(?:(?:SELECT)|(?:UPDATE)|(?:ALTER)|(?:PROCEDURE)|(?:CLASS)|(?:USER)|(?:FROM)|(?:TO)|(?:CONSTRAINT)|(?:X_.*))$")) {
+        if (UCU_SQLID_PATTERN == null) {
+            UCU_SQLID_PATTERN = StringUtilities.join(context, SQL_KEYWORDS, "^(?:", "|", "|(?:X_.*))$", "(?:", ")", false, true, null, null, (ctx, keyword) -> { return keyword.toUpperCase(); });
+        }
+        if (string.matches(UCU_SQLID_PATTERN)) {
             return "X_" + string;
         } else {
             return string;
         }
+    }
+
+    // https://www.postgresql.org/docs/10/static/sql-keywords-appendix.html
+    // see here: sql-reserved-words.list
+
+    // ---------------------------------------------------------------------------------------------------
+
+    static protected String UCU_LCU_PATTERN;
+
+    static public String recode_UCU_LCU(CallContext context, String string) {
+        return recode_UCU_LCU(context, string, (RecodingTargetContext) null);
+    }
+
+    static public String recode_UCU_LCU(CallContext context, String string, RecodingTargetContext recoding_target_context) {
+        return string.toLowerCase();
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+
+    static protected String LCU_UCU_PATTERN;
+
+    static public String recode_LCU_UCU(CallContext context, String string) {
+        return recode_LCU_UCU(context, string, (RecodingTargetContext) null);
+    }
+
+    static public String recode_LCU_UCU(CallContext context, String string, RecodingTargetContext recoding_target_context) {
+        return string.toUpperCase();
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -1388,6 +1542,16 @@ public enum Encoding {
 
     // ---------------------------------------------------------------------------------------------------
 
+    static public String recode_UTF8_SA(CallContext context, String string) {
+        return recode_UTF8_SA(context, string, (RecodingTargetContext) null);
+    }
+
+    static public String recode_UTF8_SA(CallContext context, String string, RecodingTargetContext recoding_target_context) {
+        return string.replaceAll("[ @_./+-]+", "_").replaceAll("[^A-Za-z0-9_]", "").replaceAll("__+", "_");
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+
     final static public int [] FileNameCode = {
         0 /* ? 00 */, 0 /* ? 01 */, 0 /* ? 02 */, 0 /* ? 03 */, 0 /* ? 04 */, 0 /* ? 05 */, 0 /* ? 06 */, 0 /* ? 07 */,
         0 /* ? 08 */, 0 /* ? 09 */, 0 /* ? 0A */, 0 /* ? 0B */, 0 /* ? 0C */, 0 /* ? 0D */, 0 /* ? 0E */, 0 /* ? 0F */,
@@ -1427,6 +1591,16 @@ public enum Encoding {
             sb.append(code == 1 ? ((char)b) : "_");
         }
         return sb.toString();
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+
+    static public String recode_UTF8_SUBDOMAIN(CallContext context, String string) {
+        return recode_UTF8_SUBDOMAIN(context, string, (RecodingTargetContext) null);
+    }
+
+    static public String recode_UTF8_SUBDOMAIN(CallContext context, String string, RecodingTargetContext recoding_target_context) {
+        return string.toLowerCase().replaceAll("_", "-").replaceAll("[^a-z0-9-]", "");
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -1683,6 +1857,7 @@ public enum Encoding {
 
         char         c = 0;
         int          i;
+        boolean      superscript = false;
         while ((i = string.read(context)) != -1) {
             // ⟦ protected region ⟧
             if (i == 0x27E6) {
@@ -1693,8 +1868,18 @@ public enum Encoding {
                 }
                 continue;
             }
-
             c = (char) i;
+            if (c == '¹' || c == '²' || c == '³') {
+                if (superscript == false) {
+                    superscript = true;
+                    output.append(context, "\\textsuperscript{");
+                }
+            } else {
+                if (superscript == true) {
+                    output.append(context, "}");
+                    superscript = false;
+                }
+            }
             switch (c) {
                 case '%':
                 case '&':
@@ -1738,6 +1923,15 @@ public enum Encoding {
                     break;
                 case '~':
                     output.append(context, "\\~{}");
+                    break;
+                case '¹':
+                    output.append(context, '1');
+                    break;
+                case '²':
+                    output.append(context, '2');
+                    break;
+                case '³':
+                    output.append(context, '3');
                     break;
                 default:
                     output.append(context, c);
@@ -2054,14 +2248,48 @@ public enum Encoding {
 
     // ---------------------------------------------------------------------------------------------------
 
-    static public String recode_UTF8_FIXED(CallContext context, String string, int length, String fill_character, String justification) {
-        return recode_UTF8_FIXED(context, string, (RecodingTargetContext) null, length, fill_character, justification);
+    static public String recode_UTF8_REGRP(CallContext context, String string, String pattern, Integer subgroup) {
+        return recode_UTF8_REGRP(context, string, (RecodingTargetContext) null, pattern, subgroup);
     }
 
-    static public String recode_UTF8_FIXED(CallContext context, String string, RecodingTargetContext recoding_target_context, int length, String fill_character, String justification) {
+    static public String recode_UTF8_REGRP(CallContext context, String string, RecodingTargetContext recoding_target_context, String regexp, Integer subgroup) {
+        Pattern pattern;
+        try {
+            pattern = Pattern.compile(regexp);
+        } catch (PatternSyntaxException pse) {
+            CustomaryContext.create(Context.create(context)).throwAssertionProvedFalse(context, pse, "Syntax error in regular expression '%(regexp)'", "regexp", regexp);
+            throw (ExceptionAssertionProvedFalse) null; // compiler insists
+        }
+        Matcher matcher = pattern.matcher(string);
+        if ( ! matcher.find()) { return null; }
+
+        return matcher.group(subgroup);
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+
+    static public String recode_UTF8_FIXED(CallContext context, String string, int length, String fill_character, String justification, int max_length, String truncate_pattern) {
+        return recode_UTF8_FIXED(context, string, (RecodingTargetContext) null, length, fill_character, justification, max_length, truncate_pattern);
+    }
+
+    static public String recode_UTF8_FIXED(CallContext context, String string, RecodingTargetContext recoding_target_context, int length, String fill_character, String justification, int max_length, String truncate_pattern) {
+        if (truncate_pattern != null && truncate_pattern.isEmpty() == false) {
+            if (justification.matches("[rRcC]")) {
+                string = string.replaceFirst("^("+truncate_pattern+")+","");
+            }
+            if (justification.matches("[lLcC]")) {
+                string = string.replaceFirst("("+truncate_pattern+")+$","");
+            }
+        }
+
         int len = string.length();
-        if (len > length) {
-            return string.substring(0, length);
+        if (max_length == 0) { max_length = length; }
+        if (len > max_length) {
+            if (justification.matches("[lLcC]")) {
+                return string.substring(0, max_length);
+            } else {
+                return string.substring(len -max_length, len);
+            }
         } else if (len == length) {
             return string;
         }
@@ -2097,6 +2325,17 @@ public enum Encoding {
 
     static public String recode_UTF8_REESC(CallContext context, String string, RecodingTargetContext recoding_target_context) {
         return string.replaceAll("([\\+*.?{}()\\[\\]])", "\\\\$1");
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+
+    static public String recode_UTF8_MAP(CallContext context, String string, Map<String,String> map, String default_value) {
+        return recode_UTF8_MAP(context, string, (RecodingTargetContext) null, map, default_value);
+    }
+
+    static public String recode_UTF8_MAP(CallContext context, String string, RecodingTargetContext recoding_target_context, Map<String,String> map, String default_value) {
+        String replacement = map.get(string);
+        return (replacement != null ? replacement : (default_value != null ? default_value : string));
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -2336,36 +2575,66 @@ public enum Encoding {
         int len = input.length();
         output = prepareOutput(context, output, len);
 
-        StringBuffer intermediate = new StringBuffer(len);
+        StringBuffer intermediate1 = new StringBuffer(len);
 
         if (encoding_service_DOCPAGE_HTML == null) {
             encoding_service_DOCPAGE_HTML = getEncodingService(context, Encoding.DOCPAGE, Encoding.HTML);
         }
 
-        encoding_service_DOCPAGE_HTML.recode(context, input, intermediate, link_recoder, arguments);
+        encoding_service_DOCPAGE_HTML.recode(context, input, intermediate1, link_recoder, arguments);
 
         if (link_recoder == null) {
-            output.append(intermediate);
+            output.append(intermediate1);
             return output;
         }
 
-        StringBuffer sb = new StringBuffer(len);
-        Matcher m = oorl_pattern.matcher(intermediate.toString());
-        boolean outside = true;
-        boolean warning = false;
-        while (m.find()) {
-            String all   = m.group(0);
-            String link  = m.group(1);
-            String recoded_link = link_recoder.recode(context, link, null);
-            m.appendReplacement(sb, "");
-            if (recoded_link != null) {
-                sb.append(recoded_link);
-            } else {
-                sb.append("javascript:alert('Invalid Link: " + link + "')");
+        StringBuffer intermediate2 = new StringBuffer(len);
+        {
+            Matcher m1 = oorl_pattern.matcher(intermediate1.toString());
+            boolean outside = true;
+            boolean warning = false;
+            while (m1.find()) {
+                String all   = m1.group(0);
+                String link  = m1.group(1);
+                String recoded_link = link_recoder.recode(context, link, null);
+                m1.appendReplacement(intermediate2, "");
+                if (recoded_link != null) {
+                    intermediate2.append("\"" + recoded_link + "\"");
+                } else {
+                    intermediate2.append("\"javascript:alert('Invalid Link: " + link + "')\"");
+                }
             }
+            m1.appendTail(intermediate2);
         }
-        m.appendTail(sb);
-        output.append(sb);
+
+        if (false == (link_recoder instanceof AbbreviationRecoder)) {
+            output.append(intermediate2);
+            return output;
+        }
+              
+        StringBuffer intermediate3 = new StringBuffer(len);
+        {
+            // [Concept:Actions emos.doclet,DocletToHTML.template,Encoding.java,DocletLinkRecoder.java,HTMLAction.template]
+
+            AbbreviationRecoder abbreviation_recoder = (AbbreviationRecoder) link_recoder;
+            Pattern abbreviation_pattern = abbreviation_recoder.getAbbreviationPattern(context);
+            Matcher m2 = abbreviation_pattern.matcher(intermediate2.toString());
+            boolean outside = true;
+            boolean warning = false;
+            while (m2.find()) {
+                String abbreviation = m2.group(0);
+                String recoded_abbreviation = abbreviation_recoder.recodeAbbreviation(context, abbreviation, null);
+                m2.appendReplacement(intermediate3, "");
+                if (recoded_abbreviation != null) {
+                    intermediate3.append(recoded_abbreviation);
+                } else {
+                    intermediate3.append("<div><b>Invalid Abbreviation: </b>" + recode_UTF8_XML(context, abbreviation) + "</div>");
+                }
+            }
+            m2.appendTail(intermediate3);
+        }
+
+        output.append(intermediate3);
         return output;
     }
 

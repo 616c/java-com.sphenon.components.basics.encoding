@@ -1,7 +1,7 @@
 package com.sphenon.basics.encoding;
 
 /****************************************************************************
-  Copyright 2001-2018 Sphenon GmbH
+  Copyright 2001-2024 Sphenon GmbH
 
   Licensed under the Apache License, Version 2.0 (the "License"); you may not
   use this file except in compliance with the License. You may obtain a copy
@@ -48,27 +48,31 @@ public class EncodingStep {
         int s=0;
         for (String encstep : encsteps) {
             Object[] options = null;
-            int pos = encstep.indexOf('(');
-            if (pos == -1) { pos = encstep.indexOf('['); }
-            if (pos != -1) {
-                int l = encstep.length();
-                Character last = encstep.charAt(l - 1);
-                if (last == ')' || last == ']') {
-                    String[] os = encstep.substring(pos+1, l - 1).split(",",-1);
-                    options = new Object[os.length];
-                    for (int i=0; i<os.length; i++) {
-                        if (os[i].matches("[0-9]+")) {
-                            options[i] = Integer.parseInt(os[i]);
-                        } else if (os[i].matches("\".*\"")) {
-                            options[i] = os[i].substring(1,os[i].length()-1);
-                        } else {
-                            options[i] = os[i];
+            if (encstep != null) {
+                int pos = encstep.indexOf('(');
+                if (pos == -1) { pos = encstep.indexOf('['); }
+                if (pos != -1) {
+                    int l = encstep.length();
+                    Character last = encstep.charAt(l - 1);
+                    if (last == ')' || last == ']') {
+                        String[] os = encstep.substring(pos+1, l - 1).split(",",-1);
+                        options = new Object[os.length];
+                        for (int i=0; i<os.length; i++) {
+                            if (os[i].matches("[0-9]+")) {
+                                options[i] = Integer.parseInt(os[i]);
+                            } else if (os[i].matches("\".*\"")) {
+                                options[i] = os[i].substring(1,os[i].length()-1);
+                            } else {
+                                options[i] = os[i];
+                            }
                         }
                     }
                 }
+                Encoding enc = Encoding.getEncoding(context, pos == -1 ? encstep : encstep.substring(0, pos));
+                steps[s++] = new EncodingStep(context, enc, options);
+            } else {
+                steps[s++] = null;
             }
-            Encoding enc = Encoding.getEncoding(context, pos == -1 ? encstep : encstep.substring(0, pos));
-            steps[s++] = new EncodingStep(context, enc, options);
         }
         return steps;
     }
